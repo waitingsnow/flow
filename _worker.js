@@ -3330,7 +3330,14 @@ function 创建请求TCP连接器(request) {
 	const 请求对象 = /** @type {any} */ (request);
 	const fetcher = 请求对象?.fetcher;
 	if (!fetcher || typeof fetcher.connect !== 'function') throw new Error('request.fetcher.connect unavailable');
-	return (options, init) => init === undefined ? fetcher.connect(options) : fetcher.connect(options, init);
+	return (options, init) => {
+		const socket = init === undefined ? fetcher.connect(options) : fetcher.connect(options, init);
+		// 失败或落败的竞速连接不会进入 connectStreams，也需要立即处理生命周期拒绝。
+		// 保留原 Promise，调用方 await opened/closed 时仍能收到连接错误。
+		socket.opened.catch(() => { });
+		socket.closed.catch(() => { });
+		return socket;
+	};
 }
 ////////////////////////////////////////////TLSClient by: @Alexandre_Kojeve////////////////////////////////////////////////
 const TLS_VERSION_10 = 769, TLS_VERSION_12 = 771, TLS_VERSION_13 = 772;

@@ -1,0 +1,35 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync(require('node:path').join(__dirname, '..', '_worker.js'), 'utf8');
+const start = source.indexOf('function 创建请求TCP连接器(request)');
+const end = source.indexOf('\n////////////////////////////////', start);
+const make = vm.runInNewContext(source.slice(start, end) + '\n创建请求TCP连接器');
+const failures = [];
+process.on('unhandledRejection', error => failures.push(error.message));
+(async () => {
+ let closeReject;
+ const failure = new Error('Network connection lost.');
+ const socket = { opened: Promise.resolve({}), closed: new Promise((_, reject) => closeReject = reject) };
+ const fetcher = { connect(options, init) { assert.equal(this, fetcher); return socket; } };
+ const result = make({fetcher})({hostname:'example.com',port:443});
+ assert.equal(result, socket);
+ await result.opened;
+ // A losing or failed dial may never reach connectStreams, but still rejects closed.
+ closeReject(failure);
+ await new Promise(resolve => setImmediate(resolve));
+ assert.deepEqual(failures, [], 'discarded TCP sockets must not leave unhandled lifecycle rejections');
+ let rejectOpened, rejectClosed;
+ const socket2 = { opened: new Promise((_, reject) => rejectOpened = reject), closed: new Promise((_, reject) => rejectClosed = reject) };
+ const options = {hostname:'example.com',port:443}; const init = {secureTransport:'on'};
+ const factory = make({fetcher:{connect(a,b){assert.equal(a,options); assert.equal(b,init);return socket2;}}});
+ assert.equal(factory(options,init),socket2);
+ rejectOpened(failure); rejectClosed(failure);
+ await new Promise(resolve => setImmediate(resolve));
+ assert.deepEqual(failures, []);
+ await assert.rejects(socket2.opened, error => error === failure);
+ await assert.rejects(socket2.closed, error => error === failure);
+ assert.throws(() => make({}), /request.fetcher.connect unavailable/);
+ assert.throws(() => make({fetcher:{connect(){throw failure;}}})(options), error => error === failure);
+ console.log('PASS: abandoned socket rejection handled; original promises, socket identity, options, receiver and failure propagation preserved');
+})().catch(error => { console.error(error.message); process.exitCode = 1; });
